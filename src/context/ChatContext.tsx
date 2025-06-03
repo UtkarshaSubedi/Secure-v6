@@ -3,11 +3,18 @@ import { v4 as uuidv4 } from 'uuid';
 import { Message } from '../types';
 import { useCrypto } from './CryptoContext';
 
-// Simple in-memory room storage
-const rooms = new Map<string, {
-  creator: string,
-  listeners: Set<(message: any) => void>
-}>();
+// Use localStorage for room storage
+const getRooms = () => {
+  const rooms = localStorage.getItem('chatRooms');
+  return rooms ? JSON.parse(rooms) : {};
+};
+
+const saveRooms = (rooms: any) => {
+  localStorage.setItem('chatRooms', JSON.stringify(rooms));
+};
+
+// Setup BroadcastChannel for cross-tab communication
+const broadcastChannel = new BroadcastChannel('chat_channel');
 
 interface ChatContextType {
   messages: Message[];
@@ -35,35 +42,44 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isConnected, setIsConnected] = useState(true);
   const [isPaired, setIsPaired] = useState(false);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
-  const [messageCallback, setMessageCallback] = useState<((message: any) => void) | null>(null);
-  const [userId] = useState(() => uuidv4()); // Unique ID for each user session
+  const [userId] = useState(() => uuidv4());
   const crypto = useCrypto();
 
-  // Cleanup when component unmounts or room changes
   useEffect(() => {
-    return () => {
-      if (pairingCode && messageCallback) {
-        const room = rooms.get(pairingCode);
-        if (room) {
-          room.listeners.delete(messageCallback);
-          if (room.listeners.size === 0) {
-            rooms.delete(pairingCode);
-          }
-        }
+    // Listen for messages from other tabs
+    broadcastChannel.onmessage = (event) => {
+      if (event.data.type === 'message' && event.data.roomCode === pairingCode) {
+        const newMessage: Message = {
+          id: uuidv4(),
+          content: event.data.content,
+          type: event.data.messageType,
+          timestamp: Date.now(),
+          sender: 'peer',
+          encrypted: true
+        };
+        setMessages(prev => [...prev, newMessage]);
+      } else if (event.data.type === 'room_closed' && event.data.roomCode === pairingCode) {
+        leaveChat();
       }
     };
-  }, [pairingCode, messageCallback]);
+
+    return () => {
+      broadcastChannel.onmessage = null;
+    };
+  }, [pairingCode]);
 
   const generateCode = async (): Promise<string> => {
     try {
       await crypto.generateKeyPair();
       const code = await crypto.generatePairingCode();
       
-      // Create a new room with creator ID
-      rooms.set(code, {
+      // Save room to localStorage
+      const rooms = getRooms();
+      rooms[code] = {
         creator: userId,
-        listeners: new Set()
-      });
+        created: Date.now()
+      };
+      saveRooms(rooms);
       
       setPairingCode(code);
       setIsPaired(true);
@@ -76,7 +92,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const joinChat = async (code: string): Promise<boolean> => {
     try {
-      const room = rooms.get(code);
+      const rooms = getRooms();
+      const room = rooms[code];
+      
       if (!room) {
         console.log('Room not found:', code);
         return false;
@@ -90,26 +108,6 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       await crypto.generateKeyPair();
       setPairingCode(code);
-      
-      const callback = async (message: any) => {
-        try {
-          const newMessage: Message = {
-            id: uuidv4(),
-            content: message.content,
-            type: message.type,
-            timestamp: Date.now(),
-            sender: 'peer',
-            encrypted: true
-          };
-          
-          setMessages(prev => [...prev, newMessage]);
-        } catch (error) {
-          console.error('Failed to process message:', error);
-        }
-      };
-      
-      setMessageCallback(callback);
-      room.listeners.add(callback);
       setIsPaired(true);
       return true;
     } catch (error) {
@@ -135,15 +133,13 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       setMessages(prev => [...prev, message]);
 
-      // Broadcast to all listeners in the room
-      const room = rooms.get(pairingCode);
-      if (room) {
-        room.listeners.forEach(listener => {
-          if (listener !== messageCallback) {
-            listener({ content, type });
-          }
-        });
-      }
+      // Broadcast message to other tabs
+      broadcastChannel.postMessage({
+        type: 'message',
+        roomCode: pairingCode,
+        content,
+        messageType: type
+      });
     } catch (error) {
       console.error('Failed to send message:', error);
       throw error;
@@ -151,19 +147,22 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const leaveChat = () => {
-    if (pairingCode && messageCallback) {
-      const room = rooms.get(pairingCode);
-      if (room) {
-        room.listeners.delete(messageCallback);
-        if (room.listeners.size === 0) {
-          rooms.delete(pairingCode);
-        }
+    if (pairingCode) {
+      const rooms = getRooms();
+      if (rooms[pairingCode]?.creator === userId) {
+        delete rooms[pairingCode];
+        saveRooms(rooms);
+        
+        // Notify other tabs that the room is closed
+        broadcastChannel.postMessage({
+          type: 'room_closed',
+          roomCode: pairingCode
+        });
       }
     }
     setMessages([]);
     setIsPaired(false);
     setPairingCode(null);
-    setMessageCallback(null);
     crypto.reset();
   };
 
