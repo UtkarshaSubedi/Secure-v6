@@ -67,7 +67,7 @@ const MessageList: React.FC<MessageListProps> = ({ messages }) => {
                   {message.type === 'audio' && (
                     <div className="my-1">
                       <audio controls className="w-full max-w-[240px]">
-                        <source src={message.content} type="audio/wav" />
+                        <source src={message.content} type="audio/webm;codecs=opus" />
                         Your browser does not support audio playback.
                       </audio>
                     </div>

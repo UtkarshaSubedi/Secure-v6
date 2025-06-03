@@ -86,45 +86,45 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLeave }) => {
       setIsRecording(true);
       setAudioChunks([]);
 
-      const recorder = new MediaRecorder(stream);
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
       mediaRecorder.current = recorder;
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
-          setAudioChunks((chunks) => [...chunks, e.data]);
+          setAudioChunks(chunks => [...chunks, e.data]);
         }
       };
 
-      recorder.start();
+      recorder.start(100); // Collect data every 100ms
     } catch (error) {
       console.error('Failed to start recording:', error);
     }
   };
 
   const stopRecording = async () => {
-    if (!mediaRecorder.current) return;
+    if (!mediaRecorder.current || !audioStream) return;
 
     return new Promise<void>((resolve) => {
       mediaRecorder.current!.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const audioDataUrl = e.target?.result as string;
-          try {
+        try {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+            const audioDataUrl = e.target?.result as string;
             await sendMessage(audioDataUrl, 'audio');
-          } catch (error) {
-            console.error('Failed to send audio:', error);
-          }
-        };
-        reader.readAsDataURL(audioBlob);
-        
-        if (audioStream) {
+          };
+          reader.readAsDataURL(audioBlob);
+        } catch (error) {
+          console.error('Failed to send audio:', error);
+        } finally {
           audioStream.getTracks().forEach(track => track.stop());
+          setAudioStream(null);
+          setIsRecording(false);
+          setAudioChunks([]);
+          resolve();
         }
-        setAudioStream(null);
-        setIsRecording(false);
-        setAudioChunks([]);
-        resolve();
       };
 
       mediaRecorder.current!.stop();
@@ -227,15 +227,15 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLeave }) => {
               </button>
               <button
                 onClick={handleAudioRecording}
-                className={`${
+                className={`relative ${
                   isRecording ? 'text-red-500 animate-pulse' : 'text-gray-400 hover:text-white'
                 } transition-colors ${!isPaired && 'opacity-50 cursor-not-allowed'}`}
                 disabled={!isPaired}
               >
                 <Mic className="w-5 h-5" />
                 {isRecording && (
-                  <span className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-2 py-1 rounded text-xs">
-                    {formatTime(recordingTime)}
+                  <span className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-2 py-1 rounded text-xs whitespace-nowrap">
+                    Recording {formatTime(recordingTime)}
                   </span>
                 )}
               </button>
